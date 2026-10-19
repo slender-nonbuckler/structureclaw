@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { chatRoutes } from './chat.js';
+import { codexChatRoutes } from './codex-chat.js';
 import { analysisRoutes } from './analysis.js';
 import { agentRoutes } from './agent.js';
 import { analysisEngineRoutes } from './analysis-engine.js';
@@ -18,6 +19,7 @@ export async function registerRoutes(fastify: FastifyInstance) {
 
   // 注册各模块路由
   await fastify.register(chatRoutes, { prefix: `${apiPrefix}/chat` });
+  await fastify.register(codexChatRoutes, { prefix: `${apiPrefix}/chat/codex` });
   await fastify.register(analysisRoutes, { prefix: `${apiPrefix}/analysis` });
   await fastify.register(analysisEngineRoutes, { prefix: `${apiPrefix}/analysis-engines` });
   await fastify.register(agentRoutes, { prefix: `${apiPrefix}/agent` });
