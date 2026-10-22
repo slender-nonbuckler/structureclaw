@@ -23,6 +23,7 @@ export const CODEX_CHAT_ARGS = [
   '-c', 'tools.web_search=false',
   '-c', 'web_search="disabled"',
   '-c', 'mcp_servers={}',
+  '-c', 'mcp_servers.node_repl.enabled=false',
 ] as const;
 
 const UNSAFE_ITEMS = new Set([
@@ -58,14 +59,33 @@ export class CodexAppServerProcess implements CodexRpcTransport {
   private readonly notifications: RpcNotification[] = [];
   private waiter?: { resolve: (value: RpcNotification) => void; reject: (error: Error) => void };
   private failure?: Error;
+  private stderrMentionsMcp = false;
+  private stderrMentionsConfig = false;
+  private stderrMentionsAuth = false;
 
   constructor(private readonly child: ChildProcessWithoutNullStreams) {
     const lines = createInterface({ input: child.stdout });
     lines.on('line', (line) => this.receive(line));
-    child.on('error', () => this.fail(new Error('Codex app-server could not start')));
-    child.on('close', () => this.fail(new Error('Codex app-server exited')));
-    // Never forward stderr: it may contain account or local configuration details.
-    child.stderr.resume();
+    child.on('error', (error: NodeJS.ErrnoException) => {
+      const code = typeof error.code === 'string' && /^[A-Z0-9_]+$/.test(error.code)
+        ? ` (${error.code})` : '';
+      this.fail(new Error(`Codex app-server could not start${code}`));
+    });
+    child.on('close', (code, signal) => {
+      const reason = code !== null ? `code ${code}` : `signal ${signal ?? 'unknown'}`;
+      const category = this.stderrMentionsMcp ? '; stderr mentions MCP'
+        : this.stderrMentionsConfig ? '; stderr mentions configuration'
+          : this.stderrMentionsAuth ? '; stderr mentions authentication'
+            : '';
+      this.fail(new Error(`Codex app-server exited (${reason}${category})`));
+    });
+    // Classify and discard stderr; never retain or forward account details.
+    child.stderr.on('data', (chunk: Buffer) => {
+      const output = chunk.toString('utf8');
+      this.stderrMentionsMcp ||= /\bmcp\b|node_repl/i.test(output);
+      this.stderrMentionsConfig ||= /\bconfig\b|\btoml\b/i.test(output);
+      this.stderrMentionsAuth ||= /\bauth\b|\blogin\b|\bcredential/i.test(output);
+    });
   }
 
   static start(disabledMcpServers: string[] = []): CodexAppServerProcess {
@@ -218,10 +238,10 @@ export interface CodexChatTurnResult {
   response: string;
 }
 
-export type CodexTransportFactory = (disabledMcpServers: string[]) => CodexRpcTransport;
+export type CodexTransportFactory = () => CodexRpcTransport;
 
 export class CodexChatService {
-  constructor(private readonly transportFactory: CodexTransportFactory = (names) => CodexAppServerProcess.start(names)) {}
+  constructor(private readonly transportFactory: CodexTransportFactory = () => CodexAppServerProcess.start()) {}
 
   private async prepare(transport: CodexRpcTransport): Promise<JsonObject[]> {
     await transport.request('initialize', {
@@ -245,19 +265,10 @@ export class CodexChatService {
     let threadId: string | undefined;
     let turnId: string | undefined;
     try {
-      transport = this.transportFactory([]);
+      transport = this.transportFactory();
       const inventory = await this.prepare(transport);
-      if (inventory.length > 0) {
-        const names = inventory.map((server) => server.name);
-        if (names.some((name) => typeof name !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(name))) {
-          throw new Error('Codex MCP server name cannot be safely overridden');
-        }
-        await transport.close();
-        transport = this.transportFactory(names as string[]);
-        const restrictedInventory = await this.prepare(transport);
-        if (restrictedInventory.some((server) => Object.keys(record(server.tools)).length > 0 || server.toolsError)) {
-          throw new Error('Codex chat could not disable MCP tools');
-        }
+      if (inventory.some((server) => Object.keys(record(server.tools)).length > 0 || server.toolsError)) {
+        throw new Error('Codex chat could not disable MCP tools');
       }
       if (input.signal?.aborted) throw abortError();
 

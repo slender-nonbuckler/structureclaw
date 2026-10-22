@@ -86,20 +86,19 @@ describe('Codex chat-only runtime', () => {
     expect(fake.closed).toBe(true);
   });
 
-  test('restarts with installed MCP servers disabled and verifies tool removal', async () => {
-    const inventory = new FakeTransport([], { mcp: [{ name: 'node_repl', tools: { run: {} } }] });
+  test('uses one connection and verifies that node_repl has zero tools', async () => {
     const restricted = new FakeTransport([
       event('item/agentMessage/delta', { delta: 'Hello' }),
       event('turn/completed', { turn: { id: 'turn-1', status: 'completed' } }),
     ], { mcp: [{ name: 'node_repl', tools: {} }] });
-    const names = [];
-    const service = new CodexChatService((disabled) => {
-      names.push(disabled);
-      return names.length === 1 ? inventory : restricted;
+    let launches = 0;
+    const service = new CodexChatService(() => {
+      launches += 1;
+      return restricted;
     });
     await service.runTurn({ message: 'Hi', onToken: () => {} });
-    expect(names).toEqual([[], ['node_repl']]);
-    expect(inventory.closed).toBe(true);
+    expect(launches).toBe(1);
+    expect(restricted.calls.some((call) => call.method === 'mcpServerStatus/list')).toBe(true);
     expect(restricted.closed).toBe(true);
   });
 
@@ -141,6 +140,7 @@ describe('Codex chat-only runtime', () => {
     expect(CODEX_CHAT_ARGS).toContain('features.shell_tool=false');
     expect(CODEX_CHAT_ARGS).toContain('features.apps=false');
     expect(CODEX_CHAT_ARGS).toContain('tools.view_image=false');
+    expect(CODEX_CHAT_ARGS).toContain('mcp_servers.node_repl.enabled=false');
   });
 });
 
@@ -175,6 +175,17 @@ describe('Codex stdio connection', () => {
     const client = new CodexAppServerProcess(child);
     child.stdout.write('not json\n');
     await expect(client.request('initialize', {})).rejects.toThrow('invalid JSON');
+    await client.close();
+  });
+
+  test('reports an exit code and sanitized stderr category', async () => {
+    const child = childProcess();
+    const client = new CodexAppServerProcess(child);
+    const pending = client.request('initialize', {});
+    child.stderr.write('node_repl startup failed; token=private-value');
+    child.emit('close', 1, null);
+    await expect(pending).rejects.toThrow('Codex app-server exited (code 1; stderr mentions MCP)');
+    await expect(pending).rejects.not.toThrow('private-value');
     await client.close();
   });
 });
