@@ -3,6 +3,7 @@ import { AgentSkillLoader } from '../../../dist/agent-runtime/loader.js';
 import { buildParamExtractorPrompt } from '../../../dist/agent-langgraph/param-extractor.js';
 import { handler as frame } from '../../../dist/agent-skills/structure-type/frame/handler.js';
 import { handler as concrete } from '../../../dist/agent-skills/structure-type/concrete-frame/handler.js';
+import { compareModelToDraft } from '../../../dist/agent-runtime/model-fidelity.js';
 
 const geometry = { storyHeightsM: [3.6, 3.6], bayWidthsXM: [6, 6], bayWidthsYM: [5, 5] };
 const areaLoads = [
@@ -104,6 +105,67 @@ describe('full-floor area-load convention', () => {
       const prompt = buildParamExtractorPrompt('en', undefined, plugin, 'Build the 3D frame.');
       expect(prompt).toContain('complete floor footprint');
       expect(prompt).toContain('Do not assign F1/F2 to stories solely from their order');
+      expect(prompt).toContain('floor-indexed area-load labels');
+      expect(prompt).toContain('explicit story assignment takes precedence');
+      expect(prompt).toContain('楼层编号');
+    }
+  });
+
+  test('accepted floor-indexed F1/F2 loads retain story, pressure, cases, and frame model geometry', () => {
+    for (const handler of [frame, concrete]) {
+      const state = extract(handler, engineeringDraft);
+      expect(state.engineeringDraft.loads.map(({ target, location, magnitude, unit, caseId }) =>
+        ({ target, story: location.story, magnitude, unit, caseId }))).toEqual([
+        { target: 'F1 floor', story: 1, magnitude: 10, unit: 'kN/m2', caseId: 'D' },
+        { target: 'F2 floor', story: 2, magnitude: 8, unit: 'kN/m2', caseId: 'D' },
+      ]);
+      expect(state.floorLoads).toEqual([{ story: 1, verticalKN: 1200 }, { story: 2, verticalKN: 960 }]);
+      const model = handler.buildModel(state);
+      expect(model.nodes).toHaveLength(27);
+      expect(model.elements).toHaveLength(42);
+      expect(model.stories.map(({ id, dead_load }) => ({ id, dead_load }))).toEqual([
+        { id: 'F1', dead_load: 10 }, { id: 'F2', dead_load: 8 },
+      ]);
+      expect(model.load_cases.map(({ id }) => id)).toContain('D');
+      expect(model.load_combinations).toEqual([expect.objectContaining({ id: 'ULS', factors: { D: 1 } })]);
+      const fidelity = compareModelToDraft(state, model);
+      expect(fidelity.discrepancies).toEqual([]);
+      expect(fidelity.checkedFields).toContain('engineeringDraft.analysis.loadCombinations');
+      expect(fidelity.unsupportedFields).toContain('engineeringDraft.loads');
+      expect(fidelity.status).toBe('inconclusive');
+    }
+  });
+
+  test('an explicit story assignment overrides the F-number in a load label', () => {
+    const state = extract(frame, { ...engineeringDraft, loads: [{
+      ...areaLoads[0], target: 'F1 is a load identifier; full floor at story 2', location: { story: 2 },
+    }] });
+    expect(state.floorLoads).toEqual([{ story: 2, verticalKN: 1200 }]);
+    expect(frame.buildModel(state).stories.map(({ dead_load }) => dead_load)).toEqual([undefined, 10]);
+  });
+
+  test('three-story geometry does not invent a missing F3 load', () => {
+    const state = extract(frame, {
+      ...engineeringDraft,
+      geometry: { ...geometry, storyHeightsM: [3.6, 3.6, 3.6] },
+    });
+    expect(state.floorLoads).toEqual([{ story: 1, verticalKN: 1200 }, { story: 2, verticalKN: 960 }]);
+    expect(frame.buildModel(state).stories.map(({ dead_load }) => dead_load)).toEqual([10, 8, undefined]);
+    const unresolved = extract(frame, {
+      ...engineeringDraft,
+      geometry: { ...geometry, storyHeightsM: [3.6, 3.6, 3.6] },
+    }, 'frameAreaLoadLocation');
+    expect(frame.computeMissing(unresolved, 'execution').critical).toContain('frameAreaLoadLocation');
+    expect(frame.buildModel(unresolved)).toBeUndefined();
+  });
+
+  test('arbitrary F1/F2 load IDs without established floor semantics do not map by identifier or order', () => {
+    const loads = areaLoads.map(({ location, ...load }) => ({ ...load, target: load.target.split(' ')[0] }));
+    for (const handler of [frame, concrete]) {
+      const state = extract(handler, { ...engineeringDraft, loads });
+      expect(state.floorLoads ?? []).toEqual([]);
+      expect(handler.computeMissing(state, 'execution').critical).toContain('floorLoads');
+      expect(handler.buildModel(state)).toBeUndefined();
     }
   });
 });
