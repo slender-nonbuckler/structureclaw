@@ -947,6 +947,8 @@ function projectFrameFloorLoads(loads: EngineeringDraftLoad[], patch: DraftExtra
     const field = frameFloorLoadField(load);
     let stories: number[];
     const explicitStory = resolveFrameLoadStory(load, storyCount);
+    // A 3D area pressure needs an identified floor; list order is not a floor assignment.
+    if (patch.frameDimension === '3d' && load.unit === 'kN/m2' && explicitStory === undefined) continue;
     if (explicitStory !== undefined) {
       stories = [explicitStory];
     } else {

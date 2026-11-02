@@ -37,6 +37,10 @@
   - `水平荷载500kN` → 2D 框架优先映射为 `{ "story": 层号, "lateralXKN": 500 }`
   - `x、y向水平荷载都是500kN` → 每层输出 `lateralXKN = 500` 且 `lateralYKN = 500`
 - 若用户给出面荷载/线荷载（如 `12kN/m²`、`8kN/m`）且层数、跨度等几何信息足够，应优先输出 `engineeringDraft.loads` 中的 `area` / `line` 荷载，由 runtime 换算为各层总荷载；只有几何信息不足以换算时，才追问各层总荷载（kN）。
+- 对明确指定楼层的均布面荷载，若该层完整楼面边界可由图纸或说明确定，且无局部区域、洞口、排除区或相反指示，可按整层楼面作用。保留 `location.story`、原始 `kN/m2`、向下方向及工况/组合；`target` 标明整层楼面。说明所用楼面尺寸、面积、压力与合力 `p × A`；荷载传递方式以实际分析结果为准，不自行编造。不要同时输出相同荷载的 `floorLoads` 总力，以免重复施加。
+- For a uniform area load explicitly assigned to a story, use the entire complete floor footprint established by the drawing or specification when no partial region, opening, exclusion, or contrary instruction exists. Keep `location.story`, the original `kN/m2` pressure, downward direction, and load case/combination; identify the full floor in `target`. Report the identified dimensions, area, pressure, and resultant `p × A`; describe the load-transfer method only from the actual analysis result. Do not also emit the same load as `floorLoads` total force.
+- 不得仅凭 F1/F2 出现顺序推断楼层；无法确定楼层或完整边界、局部荷载、挡土墙侧压力、洞口/排除区、与其他信息矛盾时，保留阻塞性问题并追问，不能套用整层约定。
+- Do not assign F1/F2 to stories solely from their order. Keep an unresolved issue for an unknown story or complete perimeter, partial or localized pressure, retaining-wall pressure, opening/exclusion, or contradictory load evidence; do not apply the full-floor convention.
 - 若用户明确说明某线荷载是由面荷载按受荷宽度折算得到，且要求采用该折算结果，则面荷载只是计算依据：只输出并施加折算后的 `line` 荷载，不要同时输出源 `area` 荷载。只有用户明确要求两者分别叠加时才同时保留。
 - 若用户只给出楼面荷载数值而没有单位，或没有说明它是总力、线荷载还是面荷载，不得自行补写单位或荷载种类；应输出 `draftIssues` 和 `skillState.invalidDraftFields`，要求用户确认。
 - 对作用在单个框架节点的 `point` / `nodal` 荷载，必须同时输出 `engineeringDraft.loads[].location.story` 和 `location.nodeRole`。`nodeRole` 使用 `left-side`、`right-side` 或 `middle`，不要只输出含糊的 `target: "column-top"`。

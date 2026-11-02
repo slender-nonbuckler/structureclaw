@@ -58,9 +58,16 @@ Concrete frame sections are described as rectangular cross‑sections:
 1. **Story/bay numbers**: Look for patterns like "3‑story 2‑bay", "4层3跨".
 2. **Dimensions**: Extract numbers followed by "m", "米", "mm", "毫米". Convert mm to m for story heights and bay widths.
 3. **Loads**: "dead load 5 kN/m²", "恒载 5 kN/m²", "live load 3 kN/m²", "活载 3 kN/m²". Prefer `engineeringDraft.loads` with `kind: "area"` and `unit: "kN/m2"` when floor geometry is available; the runtime can convert it to per-story total loads. Use legacy `floorLoads` only when the total kN per story is explicitly given or can be computed reliably.
+
 4. **Materials**: Look for concrete grades (C20–C80) and rebar grades (HPB300, HRB400, HRB500).
 5. **Seismic / wind design basis**: Semantically identify seismic fortification inputs such as intensity, design acceleration, design group, site category, fortification category, seismic grade, regularity, and explicit method requirements. Put scalar site parameters into `siteSeismic`; put China-code workflow intent into `skillState.seismicWorkflow`. Do not infer the analysis method through keyword/regex matching.
 6. **Boundary**: "fixed base", "pinned base", "固接", "铰接".
+
+### Full-floor area loads / 整层楼面荷载
+- 对明确指定楼层、且图纸或说明可确定该层完整楼面边界的均布面荷载，若无局部区域、洞口、排除区或相反指示，可按整层楼面作用。输出 `engineeringDraft.loads`，保留 `location.story`、`kind: "area"`、`unit: "kN/m2"`、向下方向及工况/组合，`target` 标明整层楼面；不要重复输出同一荷载的 `floorLoads` 总力。说明尺寸、面积、压力和合力 `p × A`；荷载传递方式只按实际分析结果说明。
+- For a uniform area load explicitly assigned to a story with a complete floor footprint established by the drawing or specification, use the full floor if no partial region, opening, exclusion, or contrary instruction exists. Preserve `location.story`, `kind: "area"`, `unit: "kN/m2"`, downward direction, and case/combination; identify the full floor in `target`. Do not duplicate it as a `floorLoads` total. Report dimensions, area, pressure, and resultant `p × A`, and name the transfer method only from the actual analysis result.
+- 不得仅凭 F1/F2 出现顺序推断楼层。若楼层或完整边界不明，或存在局部面压、挡土墙侧压力、洞口/排除区、矛盾信息，须保留阻塞性问题并追问；不得套用整层楼面约定。
+- Do not assign F1/F2 to stories solely from their order. Keep an unresolved issue for an unknown story or complete perimeter, partial or localized pressure, retaining-wall pressure, opening/exclusion, or contradictory evidence; do not apply this convention.
 
 ## Examples
 1. "A 2‑story 1‑bay concrete frame, story heights 4 m, bay width 8 m, concrete C35, rebar HRB400, fixed base."
