@@ -47,12 +47,36 @@ export interface EngineeringDraftMaterial {
   family?: MaterialFamily;
   grade?: string;
   rebarGrade?: string;
+  elasticModulusMPa?: number;
+  shearModulusMPa?: number;
+  poissonRatio?: number;
+  densityKgM3?: number;
+  fyMPa?: number;
+  fcMPa?: number;
+}
+
+export interface EngineeringDraftSectionProperties {
+  name?: string;
+  HMM?: number;
+  BMM?: number;
+  twMM?: number;
+  tfMM?: number;
+  areaM2?: number;
+  IyM4?: number;
+  IzM4?: number;
+  JM4?: number;
+  shearModulusMPa?: number;
 }
 
 export interface EngineeringDraftSections {
   beam?: string;
   column?: string;
   member?: string;
+  sectionProperties?: {
+    beam?: EngineeringDraftSectionProperties;
+    column?: EngineeringDraftSectionProperties;
+    member?: EngineeringDraftSectionProperties;
+  };
 }
 
 export interface EngineeringDraftBoundary {
@@ -90,6 +114,7 @@ export interface EngineeringDraftAnalysis {
   type?: AgentAnalysisType;
   engineTarget?: 'opensees' | 'pkpm' | 'yjk';
   loadCombinations?: EngineeringDraftLoadCombination[];
+  includeSelfWeight?: boolean;
 }
 
 export interface EngineeringDraft {

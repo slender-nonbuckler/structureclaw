@@ -14,6 +14,9 @@ import type {
   EngineeringDraftLoadDirection,
   EngineeringDraftLoadKind,
   EngineeringDraftLoadUnit,
+  EngineeringDraftMaterial,
+  EngineeringDraftSectionProperties,
+  EngineeringDraftSections,
   EngineeringDraftTopology,
   EngineeringDraftTopologyMember,
   EngineeringDraftTopologyNode,
@@ -129,6 +132,56 @@ function normalizeMaterialFamily(value: unknown): MaterialFamily | undefined {
     return raw as MaterialFamily;
   }
   return undefined;
+}
+
+function propertyIssue(issues: DraftIssue[] | undefined, field: string, severity: DraftIssue['severity'], value: unknown): void {
+  const reason = severity === 'conflict'
+    ? 'Conflicting explicit engineering properties. / 显式工程属性存在冲突。'
+    : 'Invalid engineering property. / 工程属性无效。';
+  if (!issues) throw new Error(`${field}: ${reason}`);
+  issues.push({ field, value, severity, reason });
+}
+
+function propertyNumber(
+  raw: Record<string, unknown>,
+  key: string,
+  field: string,
+  issues: DraftIssue[] | undefined,
+  valid: (value: number) => boolean = (value) => value > 0,
+): number | undefined {
+  if (!Object.prototype.hasOwnProperty.call(raw, key)) return undefined;
+  const value = finiteNumber(raw[key]);
+  if (value === undefined || !valid(value)) {
+    propertyIssue(issues, `${field}.${key}`, 'invalid', raw[key]);
+    return undefined;
+  }
+  return value;
+}
+
+function normalizeSectionProperties(
+  value: unknown,
+  field: string,
+  issues?: DraftIssue[],
+): EngineeringDraftSectionProperties | undefined {
+  const raw = asRecord(value);
+  if (!raw) {
+    if (value !== undefined) propertyIssue(issues, field, 'invalid', value);
+    return undefined;
+  }
+  const properties: EngineeringDraftSectionProperties = {};
+  const name = normalizeString(raw.name);
+  if (name) properties.name = name;
+  for (const key of ['HMM', 'BMM', 'twMM', 'tfMM', 'areaM2', 'IyM4', 'IzM4', 'JM4'] as const) {
+    const number = propertyNumber(raw, key, field, issues);
+    if (number !== undefined) properties[key] = number;
+  }
+  const shear = propertyNumber(raw, 'shearModulusMPa', field, issues);
+  const legacyShear = propertyNumber(raw, 'GMPa', field, issues);
+  if (shear !== undefined && legacyShear !== undefined && shear !== legacyShear) {
+    propertyIssue(issues, field, 'conflict', { shear, legacyShear });
+  }
+  if (shear !== undefined || legacyShear !== undefined) properties.shearModulusMPa = shear ?? legacyShear;
+  return Object.keys(properties).length ? properties : undefined;
 }
 
 function normalizeSupportType(value: unknown): DraftSupportType | undefined {
@@ -352,18 +405,48 @@ export function normalizeEngineeringDraft(
   } : undefined;
 
   const rawMaterial = asRecord(raw.material);
-  const material = rawMaterial ? {
-    family: normalizeMaterialFamily(rawMaterial.family),
-    grade: normalizeString(rawMaterial.grade),
-    rebarGrade: normalizeString(rawMaterial.rebarGrade),
+  const material: EngineeringDraftMaterial | undefined = rawMaterial ? {
+    ...(normalizeMaterialFamily(rawMaterial.family) && { family: normalizeMaterialFamily(rawMaterial.family) }),
+    ...(normalizeString(rawMaterial.grade) && { grade: normalizeString(rawMaterial.grade) }),
+    ...(normalizeString(rawMaterial.rebarGrade) && { rebarGrade: normalizeString(rawMaterial.rebarGrade) }),
   } : undefined;
+  if (rawMaterial && material) {
+    for (const key of ['elasticModulusMPa', 'shearModulusMPa', 'densityKgM3', 'fyMPa', 'fcMPa'] as const) {
+      const number = propertyNumber(rawMaterial, key, 'engineeringDraft.material', issues);
+      if (number !== undefined) material[key] = number;
+    }
+    const ratio = propertyNumber(rawMaterial, 'poissonRatio', 'engineeringDraft.material', issues, (value) => value > -1 && value < 0.5);
+    if (ratio !== undefined) material.poissonRatio = ratio;
+  }
 
   const rawSections = asRecord(raw.sections);
-  const sections = rawSections ? {
-    beam: normalizeString(rawSections.beam),
-    column: normalizeString(rawSections.column),
-    member: normalizeString(rawSections.member),
+  const sections: EngineeringDraftSections | undefined = rawSections ? {
+    ...(normalizeString(rawSections.beam) && { beam: normalizeString(rawSections.beam) }),
+    ...(normalizeString(rawSections.column) && { column: normalizeString(rawSections.column) }),
+    ...(normalizeString(rawSections.member) && { member: normalizeString(rawSections.member) }),
   } : undefined;
+  if (rawSections && sections) {
+    const rawProperties = asRecord(rawSections.sectionProperties);
+    const sectionProperties: NonNullable<EngineeringDraftSections['sectionProperties']> = {};
+    for (const role of ['beam', 'column', 'member'] as const) {
+      const field = `engineeringDraft.sections.sectionProperties.${role}`;
+      const canonical = normalizeSectionProperties(rawProperties?.[role], field, issues);
+      const alias = normalizeSectionProperties(rawSections[`${role}Properties`], field, issues);
+      if (canonical && alias) {
+        for (const key of Object.keys(alias) as (keyof EngineeringDraftSectionProperties)[]) {
+          if (canonical[key] !== undefined && canonical[key] !== alias[key]) {
+            propertyIssue(issues, field, 'conflict', { key, canonical: canonical[key], alias: alias[key] });
+          }
+        }
+      }
+      const properties = { ...alias, ...canonical };
+      if (properties.name && sections[role] && properties.name.toLowerCase() !== sections[role].toLowerCase()) {
+        propertyIssue(issues, field, 'conflict', { section: sections[role], propertyName: properties.name });
+      }
+      if (Object.keys(properties).length) sectionProperties[role] = properties;
+    }
+    if (Object.keys(sectionProperties).length) sections.sectionProperties = sectionProperties;
+  }
 
   const rawBoundary = asRecord(raw.boundary);
   const boundary = rawBoundary ? {
@@ -412,7 +495,11 @@ export function normalizeEngineeringDraft(
         .map(normalizeLoadCombination)
         .filter((combination): combination is EngineeringDraftLoadCombination => combination !== undefined)
       : undefined,
+    ...(typeof rawAnalysis.includeSelfWeight === 'boolean' && { includeSelfWeight: rawAnalysis.includeSelfWeight }),
   } : undefined;
+  if (rawAnalysis && rawAnalysis.includeSelfWeight !== undefined && typeof rawAnalysis.includeSelfWeight !== 'boolean') {
+    propertyIssue(issues, 'engineeringDraft.analysis.includeSelfWeight', 'invalid', rawAnalysis.includeSelfWeight);
+  }
 
   const wind = normalizeWindParams(raw.wind ?? raw.windParams);
 
@@ -460,12 +547,19 @@ export function mergeEngineeringDraft(
     topology: patch.topology ?? existing.topology,
     analysis,
   });
+  const sectionProperties = existing.sections?.sectionProperties || patch.sections?.sectionProperties
+    ? {
+      beam: { ...(existing.sections?.sectionProperties?.beam ?? {}), ...(patch.sections?.sectionProperties?.beam ?? {}) },
+      column: { ...(existing.sections?.sectionProperties?.column ?? {}), ...(patch.sections?.sectionProperties?.column ?? {}) },
+      member: { ...(existing.sections?.sectionProperties?.member ?? {}), ...(patch.sections?.sectionProperties?.member ?? {}) },
+    }
+    : undefined;
   return {
     structureType,
     geometry,
     topology: { ...(existing.topology ?? {}), ...(patch.topology ?? {}) },
     material: { ...(existing.material ?? {}), ...(patch.material ?? {}) },
-    sections: { ...(existing.sections ?? {}), ...(patch.sections ?? {}) },
+    sections: { ...(existing.sections ?? {}), ...(patch.sections ?? {}), ...(sectionProperties && { sectionProperties }) },
     boundary: { ...(existing.boundary ?? {}), ...(patch.boundary ?? {}) },
     loads,
     wind,
