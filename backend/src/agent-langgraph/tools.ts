@@ -34,6 +34,7 @@ import type {
   StructuralTypeMatch,
 } from '../agent-runtime/types.js';
 import { isFreshGenericStructuralRoute } from '../agent-runtime/plugin-helpers.js';
+import { compareModelToDraft, type ModelFidelityResult } from '../agent-runtime/model-fidelity.js';
 import { runPkpmCalcbook } from '../agent-skills/report-export/calculation-book/pkpm-calcbook/runner.js';
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2340,6 +2341,18 @@ export function buildModelToolSummary(
   };
 }
 
+function compactModelFidelity(result: ModelFidelityResult): Record<string, unknown> {
+  return {
+    status: result.status,
+    checkedFields: result.checkedFields,
+    unsupportedFields: result.unsupportedFields,
+    discrepancyCount: result.discrepancies.length,
+    discrepancies: result.discrepancies.slice(0, 5).map(({ code, draftField, modelPath, severity }) => ({
+      code, draftField, modelPath, severity,
+    })),
+  };
+}
+
 export function buildModelToolStateUpdate(
   model: Record<string, unknown>,
   summary: Record<string, unknown>,
@@ -2822,6 +2835,7 @@ export function createBuildModelTool(skillRuntime: AgentSkillRuntime) {
       // Keep ToolMessage content compact — full model lives in graph state.
       // The streaming layer reads model from nodeState for artifact_payload_sync.
       const summary = buildModelToolSummary(model, state?.locale || 'zh');
+      summary.fidelity = compactModelFidelity(compareModelToDraft(draftState, model));
       const success = summary.success !== false;
       logToolCall(log, { tool: 'build_model', durationMs: Date.now() - start, success, extra: summary });
       return toolResult(
@@ -3056,6 +3070,9 @@ export function createRunAnalysisTool(skillRuntime: AgentSkillRuntime) {
       if (!model) {
         return toolResult(toolCallId, 'run_analysis', JSON.stringify({ error: 'No model available. Run build_model first.' }));
       }
+      const fidelity = state?.draftState
+        ? compactModelFidelity(compareModelToDraft(state.draftState, model))
+        : { status: 'inconclusive', checkedFields: [], unsupportedFields: ['engineeringDraft'], discrepancyCount: 0, discrepancies: [] };
       const skillIds = configurable.skillScope;
       const analysisType = (input.analysisType || 'static') as 'static' | 'dynamic' | 'seismic' | 'nonlinear';
       const unselectedRequestedSkillId = resolveUnselectedRequestedAnalysisSkillId(
@@ -3228,6 +3245,7 @@ export function createRunAnalysisTool(skillRuntime: AgentSkillRuntime) {
         skillId: result.skillId,
         model,
       });
+      analysisSummary.fidelity = fidelity;
       const analysisSucceeded = analysisSummary.success !== false;
       logToolCall(log, {
         tool: 'run_analysis',
