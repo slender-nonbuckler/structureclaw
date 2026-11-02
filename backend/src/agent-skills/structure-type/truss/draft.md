@@ -27,6 +27,8 @@
 
 ## Topology
 
+- A geometric crossing is not automatically a structural joint. Compare joint dots or symbols across the drawing, check whether the crossing itself is marked, and trace whether each member continues through it or terminates there. When connected joints are consistently marked but two continuous members cross without a marker, preserve the continuous members and do not add a node or split them at the crossing. Respect an explicit connection detail or user instruction, including a connected crossing without a dot or a member terminating at the connection. If the vision summary both splits members at a crossing and says connectivity is uncertain, resolve that conflict from the available drawing evidence; if it remains ambiguous, emit a blocking `draftIssues` entry for `topology` and include `topology` in `skillState.invalidDraftFields` rather than accepting the split topology as confirmed.
+- 几何交叉点不自动等于结构节点。比较图中各处节点圆点或符号，检查交叉点本身是否标记，并追踪杆件是穿过交叉点连续延伸还是在此终止。若实际连接节点均有标记，而两根连续杆件在未标记处相交，应保留连续杆件，不要在交叉点增设节点或拆分杆件。尊重明确的连接详图或用户说明；即使没有圆点，明确连接的交叉点或终止于连接处的杆件仍应建为节点。若视觉摘要一面在交叉处拆分杆件，一面又称连接关系不确定，应根据现有图纸证据核实；仍有歧义时，为 `topology` 输出阻塞性 `draftIssues`，并将 `topology` 加入 `skillState.invalidDraftFields`，不要把拆分拓扑当作已确认事实。
 - Warren / 华伦桁架 maps to `skillState.trussTopology: "warren"`.
 - Pratt / 普拉特桁架 maps to `skillState.trussTopology: "pratt"`.
 - Howe / 豪式桁架 maps to `skillState.trussTopology: "howe"`.
