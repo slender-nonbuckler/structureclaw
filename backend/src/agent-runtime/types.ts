@@ -62,6 +62,7 @@ export interface EngineeringDraftBoundary {
 }
 
 export interface EngineeringDraftLoadLocation {
+  nodeId?: string;
   xM?: number;
   spanIndex?: number;
   story?: number;
@@ -69,6 +70,7 @@ export interface EngineeringDraftLoadLocation {
 }
 
 export interface EngineeringDraftLoad {
+  id?: string;
   kind: EngineeringDraftLoadKind;
   magnitude: number;
   unit: EngineeringDraftLoadUnit;

@@ -493,7 +493,9 @@ function buildExplicitTrussLoads(
   return (state.engineeringDraft?.loads ?? []).flatMap((load) => {
     const target = load.target?.trim();
     if (load.kind !== 'point' && load.kind !== 'nodal') return [];
-    const targets = target && nodeIds.has(target) ? [target] : semanticTargetIds(load);
+    const targetNodes = target?.split(/[^\p{L}\p{N}_]+/u).filter((part) => nodeIds.has(part)) ?? [];
+    const explicitNode = load.location?.nodeId?.trim() ?? (targetNodes.length === 1 ? targetNodes[0] : undefined);
+    const targets = explicitNode ? (nodeIds.has(explicitNode) ? [explicitNode] : []) : semanticTargetIds(load);
     if (targets.length === 0) return [];
     const component = load.direction === 'globalX' ? 'fx' : load.direction === 'globalY' ? 'fy' : 'fz';
     const sign = component === 'fz' ? -1 : 1;

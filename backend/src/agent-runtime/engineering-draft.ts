@@ -1,5 +1,6 @@
 import type {
   DraftExtraction,
+  DraftIssue,
   DraftFloorLoad,
   DraftLoadPosition,
   DraftLoadType,
@@ -236,12 +237,14 @@ function normalizeLoadLocation(value: unknown): EngineeringDraftLoad['location']
   const raw = asRecord(value);
   if (!raw) return undefined;
   const location = {
+    nodeId: normalizeString(raw.nodeId),
     xM: nonNegativeNumber(raw.xM ?? raw.x ?? raw.positionM),
     spanIndex: positiveInteger(raw.spanIndex ?? raw.span),
     story: positiveInteger(raw.story ?? raw.storyIndex ?? raw.level),
     nodeRole: normalizeString(raw.nodeRole ?? raw.node),
   };
-  return location.xM !== undefined
+  return location.nodeId !== undefined
+    || location.xM !== undefined
     || location.spanIndex !== undefined
     || location.story !== undefined
     || location.nodeRole !== undefined
@@ -256,6 +259,7 @@ function normalizeEngineeringLoad(value: unknown): EngineeringDraftLoad | undefi
   const magnitude = positiveNumber(raw.magnitude ?? raw.value ?? raw.loadKN ?? raw.forceKN ?? raw.intensity);
   if (!kind || magnitude === undefined) return undefined;
   return {
+    id: normalizeString(raw.id),
     kind,
     magnitude,
     unit: normalizeLoadUnit(raw.unit, kind),
@@ -326,7 +330,11 @@ function normalizeMezzanineLength(rawGeometry: Record<string, unknown>): number 
   ]);
 }
 
-export function normalizeEngineeringDraft(value: unknown): EngineeringDraft | undefined {
+export function normalizeEngineeringDraft(
+  value: unknown,
+  issues?: DraftIssue[],
+  inferredType?: string,
+): EngineeringDraft | undefined {
   const raw = asRecord(value);
   if (!raw) return undefined;
 
@@ -363,10 +371,37 @@ export function normalizeEngineeringDraft(value: unknown): EngineeringDraft | un
     frameBaseSupportType: normalizeFrameBaseSupportType(rawBoundary.frameBaseSupportType),
     supportPositionsM: nonNegativeNumberArray(rawBoundary.supportPositionsM),
   } : undefined;
+  const topology = normalizeEngineeringTopology(raw.topology);
 
-  const loads = Array.isArray(raw.loads)
+  const normalizedLoads = Array.isArray(raw.loads)
     ? raw.loads.map(normalizeEngineeringLoad).filter((load): load is EngineeringDraftLoad => load !== undefined)
     : undefined;
+  const seenTrussLoads = new Set<string>();
+  const loads = normalizedLoads?.filter((load) => {
+    if ((raw.structureType ?? inferredType) !== 'truss' || !isPointLikeLoad(load)) return true;
+    const nodeId = load.location?.nodeId;
+    const knownNodes = topology?.nodes?.map((node) => node.id) ?? [];
+    const targetNodes = load.target?.split(/[^\p{L}\p{N}_]+/u)
+      .filter((part) => knownNodes.includes(part) || /^[A-Za-z]\d+$/.test(part)) ?? [];
+    const targetNode = targetNodes.length === 1 ? targetNodes[0] : undefined;
+    if (nodeId && targetNode && nodeId.toLowerCase() !== targetNode.toLowerCase()) {
+      const reason = 'Load nodeId and target disagree. / 荷载的 nodeId 与 target 不一致。';
+      if (!issues) throw new Error(reason);
+      issues.push({ field: 'engineeringDraft.loads', severity: 'conflict', reason });
+      return false;
+    }
+    const explicitNode = nodeId ?? targetNode;
+    if (!explicitNode) return true;
+    const identity = [explicitNode.toLowerCase(), load.caseId ?? '', load.direction ?? '', load.id ?? ''].join('|');
+    if (seenTrussLoads.has(identity) && !load.id) {
+      const reason = 'Repeated load at one node needs distinct load IDs. / 同一节点的重复荷载需要不同的荷载 ID。';
+      if (!issues) throw new Error(reason);
+      issues.push({ field: 'engineeringDraft.loads', severity: 'ambiguous', reason });
+      return false;
+    }
+    seenTrussLoads.add(identity);
+    return true;
+  });
 
   const rawAnalysis = asRecord(raw.analysis);
   const analysis = rawAnalysis ? {
@@ -384,7 +419,7 @@ export function normalizeEngineeringDraft(value: unknown): EngineeringDraft | un
   const draft: EngineeringDraft = {
     structureType: normalizeString(raw.structureType) as EngineeringDraft['structureType'],
     geometry,
-    topology: normalizeEngineeringTopology(raw.topology),
+    topology,
     material,
     sections,
     boundary,
@@ -408,6 +443,7 @@ export function mergeEngineeringDraft(
       loads: mergeEngineeringDraftLoads(undefined, patch.loads, {
         structureType: patch.structureType,
         geometry: patch.geometry,
+        topology: patch.topology,
         analysis: patch.analysis,
       }),
     };
@@ -421,6 +457,7 @@ export function mergeEngineeringDraft(
   const loads = mergeEngineeringDraftLoads(existing.loads, patch.loads, {
     structureType,
     geometry,
+    topology: patch.topology ?? existing.topology,
     analysis,
   });
   return {
@@ -471,9 +508,16 @@ function loadLocationMergeValue(
 
 function engineeringLoadMergeKey(
   load: EngineeringDraftLoad,
-  draft: Pick<EngineeringDraft, 'structureType' | 'geometry' | 'analysis'>,
+  draft: Pick<EngineeringDraft, 'structureType' | 'geometry' | 'topology' | 'analysis'>,
 ): string {
   const location = loadLocationMergeValue(load, draft);
+  const knownNodes = draft.topology?.nodes?.map((node) => node.id) ?? [];
+  const targetNodes = load.target?.split(/[^\p{L}\p{N}_]+/u)
+    .filter((part) => knownNodes.includes(part) || /^[A-Za-z]\d+$/.test(part)) ?? [];
+  const targetNode = targetNodes.length === 1 ? targetNodes[0] : undefined;
+  const explicitTrussNode = draft.structureType === 'truss' && isPointLikeLoad(load)
+    ? location?.nodeId ?? targetNode
+    : undefined;
   const hasStructuredPointLocation = isPointLikeLoad(load)
     && Boolean(
       location?.nodeRole
@@ -483,7 +527,9 @@ function engineeringLoadMergeKey(
   const hasPlanarLineLocation = isLineLoad(load)
     && Boolean(location)
     && !(draft.geometry?.bayWidthsYM?.length);
-  const normalizedTarget = hasStructuredPointLocation || hasPlanarLineLocation
+  const normalizedTarget = explicitTrussNode
+    ? explicitTrussNode.trim().toLowerCase()
+    : hasStructuredPointLocation || hasPlanarLineLocation
     ? ''
     : load.target?.trim().toLowerCase().replace(/\s+/g, ' ') ?? '';
   const caseIds = new Set(
@@ -496,19 +542,20 @@ function engineeringLoadMergeKey(
     ?? load.caseType
     ?? '';
   return [
+    load.id?.trim().toLowerCase() ?? '',
     isLineLoad(load) ? 'line' : isPointLikeLoad(load) ? 'point' : load.kind,
     load.unit,
     load.direction ?? '',
     caseKey,
     normalizedTarget,
-    stableJson(location),
+    stableJson(explicitTrussNode ? { nodeId: explicitTrussNode.toLowerCase() } : location),
   ].join('|');
 }
 
 function mergeEngineeringDraftLoads(
   existing: EngineeringDraftLoad[] | undefined,
   patch: EngineeringDraftLoad[] | undefined,
-  draft: Pick<EngineeringDraft, 'structureType' | 'geometry' | 'analysis'>,
+  draft: Pick<EngineeringDraft, 'structureType' | 'geometry' | 'topology' | 'analysis'>,
 ): EngineeringDraftLoad[] | undefined {
   if (!existing?.length && !patch?.length) return undefined;
   const merged = new Map<string, EngineeringDraftLoad>();

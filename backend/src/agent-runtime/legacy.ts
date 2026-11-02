@@ -168,7 +168,8 @@ export function normalizeLegacyDraftPatch(patch: Record<string, unknown> | null 
   if (!patch) {
     return {};
   }
-  const draftIssues = normalizeDraftIssues(patch.draftIssues);
+  const draftIssues = normalizeDraftIssues(patch.draftIssues) ?? [];
+  const engineeringDraft = normalizeSemanticEngineeringDraft(patch.engineeringDraft, draftIssues, typeof patch.inferredType === 'string' ? patch.inferredType : undefined);
   const issueFields = draftIssues
     ?.map((issue) => issue.field)
     .filter((field): field is string => typeof field === 'string' && field.trim().length > 0);
@@ -183,8 +184,8 @@ export function normalizeLegacyDraftPatch(patch: Record<string, unknown> | null 
   return {
     inferredType: normalizeInferredType(patch.inferredType),
     skillId: typeof patch.skillId === 'string' ? patch.skillId : undefined,
-    engineeringDraft: normalizeSemanticEngineeringDraft(patch.engineeringDraft),
-    draftIssues,
+    engineeringDraft,
+    draftIssues: draftIssues.length ? draftIssues : undefined,
     skillState,
     lengthM: normalizeNumber(patch.lengthM),
     spanLengthM: normalizeNumber(patch.spanLengthM),
