@@ -23,6 +23,12 @@
 - "集中力" / "point load" / "点荷载" → `"loadType": "point"`
 - 门式刚架默认 `"loadType": "distributed"`
 
+## 梁柱连接 / Beam-column connections
+- 对明确的常规门式刚架，若梁柱在图中连续相交且没有铰、杆端释放或相反的连接详图，按梁柱节点弯矩连续建模；不要仅因杆端释放未标注就输出 `draftIssues` 或 `invalidDraftFields` 追问。将此作为建模约定说明，不要称为图纸明确给出的连接细节。
+- For a conventional portal frame whose continuously connected beam-column drawing and structural context support a rigid-joint idealization, model moment-continuous beam-column joints when no hinge, end release, or contrary connection detail is indicated. Do not create a release-related `draftIssue` or `invalidDraftFields` solely because releases are unlabeled. Report the convention; do not claim the drawing explicitly specifies rigidity.
+- 柱脚 fixed/pinned 支座不是梁柱杆端释放，须按图纸分别保留。若明确显示梁柱铰接/释放、连接详图相互矛盾，或只是连接方式无法判定的普通门架，不得静默按刚接处理；当前门式刚架建模器不能表达杆端释放，应输出指明构件/节点和能力限制的阻塞性 `draftIssue`，并要求澄清。
+- Keep fixed/pinned column-base restraints distinct from beam-column releases. If a beam-column hinge or release is explicit, details conflict, or a generic portal's connection behavior is genuinely uncertain, do not silently model continuity. The current portal builder cannot represent end releases: emit a blocking `draftIssue` identifying the member/joint and limitation, and seek clarification.
+
 ## engineeringDraft（复杂门架优先使用）
 - 复杂几何和多个荷载优先输出顶层 `engineeringDraft`，旧字段可同时输出但不要丢失 `engineeringDraft`。
 - 跨度数组写入 `engineeringDraft.geometry.spanLengthsM`，檐口/柱高写入 `engineeringDraft.geometry.heightM`。

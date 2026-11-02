@@ -255,6 +255,9 @@ export function buildFrameReportNarrative(input: SkillReportNarrativeInput): str
       ? '- 本报告按规则轴网框架草稿生成，建议结合实际结构布置复核边界条件与荷载路径。'
       : '- This report is generated from a regular-grid frame draft; verify boundary conditions and load paths against the actual structural layout.',
     input.locale === 'zh'
+      ? '- 建模约定：梁柱节点按弯矩连续处理；柱脚约束按模型单独设置。若实际存在杆端释放，须修订模型后重新分析。'
+      : '- Modeling convention: beam-column joints are moment-continuous; column-base restraints are set separately. Revise and rerun the model if actual member-end releases exist.',
+    input.locale === 'zh'
       ? '- 对于退台、缺跨或明显不规则框架，建议补充更细化模型后重新分析与校核。'
       : '- For setbacks, missing bays, or strongly irregular frames, refine the model and rerun analysis/code checks.',
   ];

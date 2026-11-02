@@ -141,6 +141,9 @@ function buildPortalFrameReportNarrative(input: SkillReportNarrativeInput): stri
       ? '- 门式刚架结果受檐口高度、跨高比与屋面荷载分布影响显著，建议优先复核几何与荷载简化假定。'
       : '- Portal-frame response is strongly affected by eave height, span-to-height ratio, and roof load distribution; verify geometric/load simplifications first.',
     input.locale === 'zh'
+      ? '- 建模约定：梁柱节点按弯矩连续处理；柱脚约束按模型单独设置。若实际存在杆端释放，须修订模型后重新分析。'
+      : '- Modeling convention: beam-column joints are moment-continuous; column-base restraints are set separately. Revise and rerun the model if actual member-end releases exist.',
+    input.locale === 'zh'
       ? '- 若存在吊车荷载、风吸力分区或变截面刚架构件，建议补充专项工况后重新校核。'
       : '- If crane loads, wind suction zoning, or tapered members are present, add dedicated load cases and rerun checks.',
   ];

@@ -49,6 +49,12 @@
 - 识别：`柱脚铰接`、`base pinned` → `"frameBaseSupportType": "pinned"`
 - 默认推荐：fixed。
 
+## 梁柱连接 / Beam-column connections
+- 对明确为抗弯框架/刚接框架，或图示梁柱连续相交、结构语境明确支持抗弯框架理想化的常规框架，若没有铰、杆端释放或相反的连接详图，按梁柱节点弯矩连续建模；不要仅因图中未标注杆端释放就输出 `draftIssues` 或 `invalidDraftFields` 追问。将其作为建模约定说明，不要声称图纸明确标注了刚接。
+- For an identified moment-resisting/rigid frame, or a conventional frame whose continuous beam-column drawing and structural context support that idealization, model moment-continuous beam-column joints when no hinge, end release, or contrary connection detail is indicated. Do not create a release-related `draftIssue` or `invalidDraftFields` solely because releases are unlabeled. Report this as a modeling convention, not as an explicit drawing annotation.
+- 柱脚支座的 fixed/pinned 与梁柱节点杆端释放是不同条件；图纸给出的柱脚约束必须单独保留。若明确给出梁柱铰接、释放或连接信息相互矛盾，不得按刚接覆盖；当前框架建模器不能表达杆端释放，应输出具体构件/节点的阻塞性 `draftIssue` 并说明该能力限制。若只是一般框架且连接受力方式确实无法判定，也应追问。
+- Fixed/pinned column-base restraints are separate from beam-column end releases; preserve explicit base restraints. If a beam-column hinge or release is specified, or connection details conflict, do not replace it with continuity. The current frame builder cannot represent end releases: emit a blocking `draftIssue` naming the affected member/joint and explain the limitation. Ask when a generic frame's connection behavior remains genuinely uncertain.
+
 ## 几何规则框架识别
 - `三层` / `3层` → `storyCount = 3`
 - `每层3m` / `层高3m` → `storyHeightsM = [3, 3, 3]`
