@@ -1373,31 +1373,48 @@ function buildPortalFrameMaterial(state: DraftState): { record: Record<string, u
 }
 
 function buildPortalFrameSection(state: DraftState, G: number): Record<string, unknown> {
-  const raw = state.engineeringDraft?.sections?.member
-    ?? state.engineeringDraft?.sections?.beam
-    ?? state.engineeringDraft?.sections?.column;
-  const normalized = raw?.trim().toUpperCase().replace(/[×*]/g, 'X').replace(/\s+/g, '');
-  const match = normalized?.match(/^H(\d+(?:\.\d+)?)X(\d+(?:\.\d+)?)X(\d+(?:\.\d+)?)X(\d+(?:\.\d+)?)$/);
-  if (!match) {
+  const sections = state.engineeringDraft?.sections;
+  const explicit = ([['member', sections?.member], ['beam', sections?.beam], ['column', sections?.column]] as const)
+    .flatMap(([field, raw]) => raw === undefined ? [] : [{ field, raw }]);
+  if (explicit.length === 0) {
     return { id: '1', name: 'PF1', type: 'beam', properties: { A: 0.02, Iy: 0.0002, Iz: 0.0002, J: 0.0002, G } };
   }
-
-  const H = Number(match[1]);
-  const B = Number(match[2]);
-  const tw = Number(match[3]);
-  const tf = Number(match[4]);
+  const parsed = explicit.map(({ field, raw }) => {
+    const match = raw.trim().replace(/[×*]/g, 'x').match(/^H\s*(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)(?=$|[;\s])/i);
+    if (!match || (raw.trim().slice(match[0].length).trim() && !raw.trim().slice(match[0].length).trim().startsWith(';'))) {
+      throw new Error(`Unsupported portal-frame section in sections.${field}: "${raw}". Use H<height>x<width>x<web>x<flange> in mm. / sections.${field} 的门架截面无效；请使用毫米制 H<高>x<宽>x<腹板>x<翼缘>。`);
+    }
+    return { field, raw, name: `H${Number(match[1])}X${Number(match[2])}X${Number(match[3])}X${Number(match[4])}`, values: match.slice(1, 5).map(Number), details: raw.trim().slice(match[0].length).trim() };
+  });
+  if (new Set(parsed.map((section) => section.name)).size !== 1) {
+    throw new Error(`Conflicting portal-frame sections: ${parsed.map((section) => `${section.field}=${section.name}`).join(', ')}. / 门架截面标识冲突，请确认所有构件截面。`);
+  }
+  const [H, B, tw, tf] = parsed[0].values;
   const hw = H - 2 * tf;
-  if (hw <= 0) {
-    return { id: '1', name: 'PF1', type: 'beam', properties: { A: 0.02, Iy: 0.0002, Iz: 0.0002, J: 0.0002, G } };
+  if (H <= 0 || B <= 0 || tw <= 0 || tf <= 0 || hw <= 0 || tw >= B) {
+    throw new Error(`Invalid portal-frame section dimensions: ${parsed[0].name}. / 门架截面尺寸无效，请核对高度、宽度及板厚。`);
   }
 
   const A = (tw * hw + 2 * B * tf) / 1e6;
   const Iy = ((tw * hw ** 3) / 12 + (2 * B * tf ** 3) / 12 + 2 * B * tf * ((hw + tf) / 2) ** 2) / 1e12;
   const Iz = ((2 * tf * B ** 3) / 12 + (hw * tw ** 3) / 12) / 1e12;
   const J = (2 * B * tf ** 3 + hw * tw ** 3) / 3 / 1e12;
+  const properties = { H, B, tw, tf, A, Iy, Iz, J };
+  for (const section of parsed) {
+    if (!section.details) continue;
+    const items = section.details.slice(1).split(',');
+    for (const item of items) {
+      const detail = item.trim().match(/^(H|B|tw|tf|A|Iy|Iz|J)\s*=\s*(\d+(?:\.\d+)?(?:e[+-]?\d+)?)\s*(mm|m2|m4)$/i);
+      const key = Object.keys(properties).find((candidate) => candidate.toLowerCase() === detail?.[1].toLowerCase()) as keyof typeof properties | undefined;
+      const expectedUnit = key && ['H', 'B', 'tw', 'tf'].includes(key) ? 'mm' : key === 'A' ? 'm2' : 'm4';
+      if (!detail || !key || detail[3].toLowerCase() !== expectedUnit || Math.abs(Number(detail[2]) - properties[key]) > properties[key] * 0.0001) {
+        throw new Error(`Invalid portal-frame section property in sections.${section.field}: "${item.trim()}". / sections.${section.field} 的截面属性与尺寸不符，请核对。`);
+      }
+    }
+  }
   return {
     id: '1',
-    name: normalized,
+    name: parsed[0].name,
     type: 'H',
     shape: { kind: 'H', H, B, tw, tf },
     properties: { A, Iy, Iz, J, G },

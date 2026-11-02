@@ -198,4 +198,64 @@ describe('portal-frame handler', () => {
       [true, true, true, false, false, false],
     ]);
   });
+
+  test('keeps the specified H700 section from a verbose member description on all five members', () => {
+    const patch = handler.extractDraft({
+      message: '',
+      llmDraftPatch: {
+        engineeringDraft: {
+          structureType: 'portal-frame',
+          geometry: { spanLengthsM: [18, 18], heightM: 9 },
+          sections: {
+            beam: 'H700x300x12x20',
+            column: 'H700x300x12x20',
+            member: 'H700x300x12x20; H=700 mm, B=300 mm, tw=12 mm, tf=20 mm, A=0.01992 m2, Iy=0.001675096 m4, Iz=0.00009009504 m4, J=0.00000198016 m4',
+          },
+          loads: [{ kind: 'line', magnitude: 6, unit: 'kN/m', direction: 'gravity', target: 'roof' }],
+        },
+      },
+    });
+    const model = handler.buildModel(handler.mergeState(undefined, patch));
+    const section = model.sections[0];
+    expect(model.elements).toHaveLength(5);
+    expect(model.elements.every((element) => element.section === section.id)).toBe(true);
+    expect(section.name).toBe('H700X300X12X20');
+    expect(section.shape).toEqual({ kind: 'H', H: 700, B: 300, tw: 12, tf: 20 });
+    expect(section.properties.A).toBeCloseTo(0.01992, 8);
+    expect(section.properties.Iy).toBeCloseTo(0.001675096, 10);
+    expect(section.properties.Iz).toBeCloseTo(0.00009009504, 10);
+    expect(section.properties.J).toBeCloseTo(0.00000198016, 12);
+  });
+
+  test('rejects conflicting explicit portal-frame section identifiers', () => {
+    const state = { inferredType: 'portal-frame', spanLengthM: 18, heightM: 6, loadKN: 6,
+      engineeringDraft: { sections: { member: 'H700x300x12x20', beam: 'H600x300x12x20' } }, updatedAt: 0 };
+    expect(() => handler.buildModel(state)).toThrow(/conflict|冲突/i);
+  });
+
+  test.each(['beam', 'column'])('uses a clean %s identifier when member is omitted', (field) => {
+    const state = { inferredType: 'portal-frame', spanLengthM: 18, heightM: 6, loadKN: 6,
+      engineeringDraft: { sections: { [field]: 'H700x300x12x20' } }, updatedAt: 0 };
+    expect(handler.buildModel(state).sections[0].name).toBe('H700X300X12X20');
+  });
+
+  test('rejects unknown explicit portal-frame sections instead of using PF1', () => {
+    const state = { inferredType: 'portal-frame', spanLengthM: 18, heightM: 6, loadKN: 6,
+      engineeringDraft: { sections: { member: 'UNKNOWN-SECTION' } }, updatedAt: 0 };
+    expect(() => handler.buildModel(state)).toThrow(/section|截面/i);
+  });
+
+  test.each([
+    'H700x300x12x400',
+    'H700x300x12x20; A=0.02 m2',
+  ])('rejects invalid explicit portal-frame section %s', (member) => {
+    const state = { inferredType: 'portal-frame', spanLengthM: 18, heightM: 6, loadKN: 6,
+      engineeringDraft: { sections: { member } }, updatedAt: 0 };
+    expect(() => handler.buildModel(state)).toThrow(/section|截面/i);
+  });
+
+  test('keeps PF1 for a portal frame without an explicit section', () => {
+    const state = { inferredType: 'portal-frame', spanLengthM: 18, heightM: 6, loadKN: 6, updatedAt: 0 };
+    expect(handler.buildModel(state).sections[0].name).toBe('PF1');
+  });
 });
