@@ -11,6 +11,7 @@ import type {
   EngineeringDraftLoad,
   EngineeringDraftLoadCaseType,
   EngineeringDraftLoadCombination,
+  EngineeringDraftSectionProperties,
 } from '../../../agent-runtime/types.js';
 import { REQUIRED_KEYS } from './constants.js';
 
@@ -95,6 +96,19 @@ export function normalizeSteelGrade(raw: string): string {
 
 export function normalizeSectionName(raw: string): string {
   return raw.trim().toUpperCase().replace(/\s+/g, '').replace(/[×x*]/gi, 'X');
+}
+
+export function matchesFrameSectionProperties(name: string, properties: EngineeringDraftSectionProperties): boolean {
+  const catalog = H_SECTION_PROPERTIES[normalizeSectionName(name)];
+  if (!catalog) return false;
+  const expected = {
+    HMM: catalog.shape.H, BMM: catalog.shape.B, twMM: catalog.shape.tw, tfMM: catalog.shape.tf,
+    areaM2: catalog.A, IyM4: catalog.Iy, IzM4: catalog.Iz, JM4: catalog.J,
+  };
+  return (Object.keys(expected) as (keyof typeof expected)[]).every((key) => (
+    typeof properties[key] === 'number'
+    && Math.abs(properties[key] - expected[key]) <= expected[key] * 0.0001
+  ));
 }
 
 function resolveFrameMaterialProps(grade: string | undefined): ResolvedFrameMaterialProps {

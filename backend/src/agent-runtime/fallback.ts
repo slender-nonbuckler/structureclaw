@@ -1,6 +1,7 @@
 import type { AppLocale } from '../services/locale.js';
 import type {
   DraftExtraction,
+  EngineeringDraft,
   DraftFloorLoad,
   DraftIssue,
   DraftLoadPosition,
@@ -16,6 +17,7 @@ import type {
   StructuralTypeKey,
 } from './types.js';
 import { mergeEngineeringDraft } from './engineering-draft.js';
+import { matchesFrameSectionProperties } from '../agent-skills/structure-type/frame/model.js';
 import { buildModel as buildDraftModel } from './model-builder.js';
 import { localize } from './plugin-helpers.js';
 
@@ -89,7 +91,7 @@ function getInvalidDraftFields(state: DraftState | DraftExtraction | undefined):
   return fields.filter((field): field is string => typeof field === 'string');
 }
 
-function collectValidPatchFields(patch: DraftExtraction): Set<string> {
+function collectValidPatchFields(patch: DraftExtraction, merged: EngineeringDraft | undefined): Set<string> {
   const valid = new Set<string>();
   const checkPositive = (field: string, value: unknown) => {
     if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
@@ -164,13 +166,50 @@ function collectValidPatchFields(patch: DraftExtraction): Set<string> {
   for (const [index, load] of (patch.engineeringDraft?.loads ?? []).entries()) {
     checkPositive(`loads[${index}].magnitude`, load.magnitude);
   }
+  const patchIssues = new Set(patch.draftIssues?.map((issue) => issue.field) ?? []);
+  const correctedTopology = patch.engineeringDraft?.topology;
+  if (correctedTopology?.nodes?.length && correctedTopology.members?.length && !patchIssues.has('topology')) {
+    const ids = new Set(correctedTopology.nodes.map((node) => node.id));
+    if (ids.size === correctedTopology.nodes.length
+      && correctedTopology.nodes.every((node) => [node.x, node.y, node.z].every(Number.isFinite))
+      && correctedTopology.members.every((member) => member.nodes.length === 2
+        && member.nodes[0] !== member.nodes[1]
+        && member.nodes.every((id) => ids.has(id)))
+      && correctedTopology.nodes.every((node) => correctedTopology.members?.some((member) => member.nodes.includes(node.id)))
+      && correctedTopology.nodes.some((node) => node.restraints?.some(Boolean))) {
+      valid.add('topology');
+    }
+  }
+  const correctedLoads = patch.engineeringDraft?.loads;
+  if (correctedLoads?.length && merged?.loads?.length && !patchIssues.has('loads')) {
+    const nodeIds = new Set(merged.topology?.nodes?.map((node) => node.id) ?? []);
+    const loadIsDefined = (load: NonNullable<EngineeringDraft['loads']>[number]) => {
+      if (!Number.isFinite(load.magnitude) || load.magnitude <= 0 || !load.direction) return false;
+      if (load.kind === 'nodal' || load.kind === 'point') {
+        const node = load.location?.nodeId ?? load.target;
+        return Boolean(node && nodeIds.has(node) && load.unit === 'kN' && load.caseId
+          && (!load.target || !nodeIds.has(load.target) || load.target === node));
+      }
+      // A target label alone does not establish a distributed load's extent.
+      return false;
+    };
+    if (merged.loads.every(loadIsDefined) && correctedLoads.every(loadIsDefined)) valid.add('loads');
+  }
+  const beamProperties = patch.engineeringDraft?.sections?.sectionProperties?.beam;
+  const beamName = merged?.sections?.beam;
+  if (beamProperties && beamName && !patchIssues.has('frameBeamSectionProperties')
+    && !patchIssues.has('engineeringDraft.sections.sectionProperties.beam')
+    && beamProperties.name?.toLowerCase() === beamName.toLowerCase()
+    && matchesFrameSectionProperties(beamName, beamProperties)) {
+    valid.add('frameBeamSectionProperties');
+    valid.add('engineeringDraft.sections.sectionProperties.beam');
+  }
   return valid;
 }
 
-function mergeInvalidDraftFields(existing: DraftState | undefined, patch: DraftExtraction): string[] | undefined {
+function mergeInvalidDraftFields(existing: DraftState | undefined, patch: DraftExtraction, clearedByPatch: Set<string>): string[] | undefined {
   const patchInvalidFields = getInvalidDraftFields(patch);
   const patchInvalid = new Set(patchInvalidFields);
-  const clearedByPatch = collectValidPatchFields(patch);
   const merged = [
     ...getInvalidDraftFields(existing).filter((field) => !clearedByPatch.has(field) || patchInvalid.has(field)),
     ...patchInvalidFields,
@@ -462,8 +501,8 @@ export function mergeDraftState(existing: DraftState | undefined, patch: DraftEx
   const bayWidthsYM = patch.bayWidthsYM ?? existing?.bayWidthsYM;
   const floorLoads = mergeFloorLoads(existing?.floorLoads, patch.floorLoads);
   const engineeringDraft = mergeEngineeringDraft(existing?.engineeringDraft, patch.engineeringDraft);
-  const clearedFields = collectValidPatchFields(patch);
-  const invalidDraftFields = mergeInvalidDraftFields(existing, patch);
+  const clearedFields = collectValidPatchFields(patch, engineeringDraft);
+  const invalidDraftFields = mergeInvalidDraftFields(existing, patch, clearedFields);
   const draftIssues = mergeDraftIssues(existing, patch, clearedFields);
   const rawSkillState = existing?.skillState || patch.skillState
     ? {

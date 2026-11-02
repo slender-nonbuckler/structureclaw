@@ -113,7 +113,7 @@ function normalizeTopologyMember(value: unknown): EngineeringDraftTopologyMember
   };
 }
 
-function normalizeEngineeringTopology(value: unknown): EngineeringDraftTopology | undefined {
+function normalizeEngineeringTopology(value: unknown, issues?: DraftIssue[]): EngineeringDraftTopology | undefined {
   const raw = asRecord(value);
   if (!raw) return undefined;
   const nodes = Array.isArray(raw.nodes)
@@ -122,6 +122,10 @@ function normalizeEngineeringTopology(value: unknown): EngineeringDraftTopology 
   const members = Array.isArray(raw.members)
     ? raw.members.map(normalizeTopologyMember).filter((member): member is EngineeringDraftTopologyMember => member !== undefined)
     : undefined;
+  if ((Array.isArray(raw.nodes) && nodes?.length !== raw.nodes.length)
+    || (Array.isArray(raw.members) && members?.length !== raw.members.length)) {
+    propertyIssue(issues, 'topology', 'invalid', value);
+  }
   return nodes?.length || members?.length ? { nodes, members } : undefined;
 }
 
@@ -454,11 +458,14 @@ export function normalizeEngineeringDraft(
     frameBaseSupportType: normalizeFrameBaseSupportType(rawBoundary.frameBaseSupportType),
     supportPositionsM: nonNegativeNumberArray(rawBoundary.supportPositionsM),
   } : undefined;
-  const topology = normalizeEngineeringTopology(raw.topology);
+  const topology = normalizeEngineeringTopology(raw.topology, issues);
 
   const normalizedLoads = Array.isArray(raw.loads)
     ? raw.loads.map(normalizeEngineeringLoad).filter((load): load is EngineeringDraftLoad => load !== undefined)
     : undefined;
+  if (Array.isArray(raw.loads) && normalizedLoads?.length !== raw.loads.length) {
+    propertyIssue(issues, 'loads', 'invalid', raw.loads);
+  }
   const seenTrussLoads = new Set<string>();
   const loads = normalizedLoads?.filter((load) => {
     if ((raw.structureType ?? inferredType) !== 'truss' || !isPointLikeLoad(load)) return true;
