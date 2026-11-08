@@ -34,6 +34,8 @@ import type {
   StructuralTypeMatch,
 } from '../agent-runtime/types.js';
 import { isFreshGenericStructuralRoute } from '../agent-runtime/plugin-helpers.js';
+import { matchConservativeStructuralRoute } from '../agent-runtime/structural-routing.js';
+import { detectUnsupportedStructuralTypeByRules } from '../agent-runtime/fallback.js';
 import { compareModelToDraft, type ModelFidelityResult } from '../agent-runtime/model-fidelity.js';
 import { runPkpmCalcbook } from '../agent-skills/report-export/calculation-book/pkpm-calcbook/runner.js';
 // ---------------------------------------------------------------------------
@@ -2420,10 +2422,18 @@ export async function resolveDetectedStructuralTypeMatch(
   skillRuntime: Pick<AgentSkillRuntime, 'resolvePluginForType'>,
   structuralTypeKey: string | null | undefined,
   skillIds?: string[],
+  message?: string,
 ): Promise<StructuralTypeMatch | null> {
-  if (!structuralTypeKey) return null;
+  if (!structuralTypeKey || structuralTypeKey === 'unknown') return null;
   const plugin = await skillRuntime.resolvePluginForType(structuralTypeKey, skillIds);
-  if (!plugin) return null;
+  if (!plugin || plugin.id === 'generic') return null;
+  if (message) {
+    if (detectUnsupportedStructuralTypeByRules(message, 'en')) return null;
+    const explicitRoute = matchConservativeStructuralRoute(message);
+    if (explicitRoute && explicitRoute.skillId !== plugin.id) return null;
+    if (/\b(?:new|another|different|separate|unrelated)\s+(?:structural\s+)?(?:task|model|structure|project|design|analysis)\b/i.test(message)
+      || /(?:新的|另一个|另一项|不同的)(?:结构|模型|项目|任务)/u.test(message)) return null;
+  }
   return {
     key: structuralTypeKey as StructuralTypeKey,
     mappedType: plugin.structureType,
@@ -2431,6 +2441,19 @@ export async function resolveDetectedStructuralTypeMatch(
     supportLevel: 'supported',
     routingSource: 'current-state',
   };
+}
+
+export function persistedStructuralTypeKey(
+  state: Pick<AgentState, 'structuralTypeKey' | 'draftState'> | undefined,
+): string | null | undefined {
+  if (state?.structuralTypeKey && state.structuralTypeKey !== 'unknown') {
+    return state.structuralTypeKey;
+  }
+  const draft = state?.draftState;
+  if (draft?.inferredType && draft.inferredType !== 'unknown') {
+    return draft.skillId && draft.skillId !== 'generic' ? draft.skillId : draft.inferredType;
+  }
+  return state?.structuralTypeKey;
 }
 
 export function createDetectStructureTypeTool(skillRuntime: AgentSkillRuntime) {
@@ -2447,14 +2470,25 @@ export function createDetectStructureTypeTool(skillRuntime: AgentSkillRuntime) {
       const detectionMessage = resolveRetryTaskMessage(message);
       const nestedUsage = benchmarkLlmUsageCollector();
       try {
-        const match = await detectStructuralTypeWithConfiguredLlm(skillRuntime, {
+        const persistedMatch = await resolveDetectedStructuralTypeMatch(
+          skillRuntime, persistedStructuralTypeKey(state), skillIds, message,
+        );
+        const matchFromLlm = await detectStructuralTypeWithConfiguredLlm(skillRuntime, {
           message: detectionMessage,
           locale,
-          currentState: state?.draftState || undefined,
+          currentState: state?.draftState || (persistedMatch ? {
+            inferredType: persistedMatch.mappedType,
+            skillId: persistedMatch.skillId,
+            structuralTypeKey: persistedMatch.key,
+            updatedAt: 0,
+          } : undefined),
           skillIds,
           signal: config.signal,
           onUsage: nestedUsage.onUsage,
         });
+        const match = persistedMatch && matchFromLlm.key === 'unknown'
+          && matchFromLlm.supportLevel !== 'unsupported'
+          ? persistedMatch : matchFromLlm;
         const unsupported = match.supportLevel === 'unsupported';
         const result = {
           key: match.key,
@@ -2558,8 +2592,9 @@ export function createExtractDraftParamsTool(skillRuntime: AgentSkillRuntime) {
         }, 'extract_draft_params resolved message');
         const detectedMatch = await resolveDetectedStructuralTypeMatch(
           skillRuntime,
-          state?.structuralTypeKey,
+          persistedStructuralTypeKey(state),
           skillIds,
+          message,
         );
         const match = detectedMatch ?? await detectStructuralTypeWithConfiguredLlm(skillRuntime, {
           message: extractionMessage,
