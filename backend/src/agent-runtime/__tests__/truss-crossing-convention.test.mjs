@@ -2,6 +2,7 @@ import { describe, expect, test } from '@jest/globals';
 import { AgentSkillLoader } from '../../../dist/agent-runtime/loader.js';
 import { buildParamExtractorPrompt } from '../../../dist/agent-langgraph/param-extractor.js';
 import { handler } from '../../../dist/agent-skills/structure-type/truss/handler.js';
+import { resolveTrussExtractionEvidenceMessage } from '../../../dist/agent-langgraph/tools.js';
 
 const nodes = [
   { id: 'A', x: 0, y: 0, z: 0, restraints: [true, true, true, false, false, false] },
@@ -19,10 +20,17 @@ const unconnectedMembers = [...commonMembers, ['B', 'D'], ['C', 'F']];
 const connectedMembers = [...commonMembers, ['B', 'X'], ['X', 'D'], ['C', 'X'], ['X', 'F']];
 const conflictingVisionSummary = 'X is the visible intersection of continuous members B-D and C-F; no explicit joint marker is shown. The members list splits both at X. Connectivity is ambiguous.';
 const unconnectedVisionSummary = 'Connected joints elsewhere have dots. Continuous members B-D and C-F cross at X without a dot or terminating end.';
+const crossingVision = {
+  structuralType: '2D truss',
+  nodes: ['B: x=2 m, z=1.5 m', 'C: x=4 m, z=3 m', 'D: x=6 m, z=1.5 m', 'F: x=4 m, z=0 m', 'X: unmarked crossing, x=4 m, z=1.5 m'],
+  members: ['B-X', 'X-D', 'C-X', 'X-F'],
+  missingOrUnclear: ['X is an unmarked line intersection; connection of crossing members is not explicitly marked with a joint symbol.'],
+};
+const visionMessage = (vision) => `[Benchmark vision attachment summaries]\n#1\n${JSON.stringify(vision)}`;
 
-function stateFor(members, withCrossing, issue = false, message = '') {
+function stateFor(members, withCrossing, issue = false, message = '', existing) {
   const patch = handler.extractDraft({
-    message, locale: 'en', currentState: undefined,
+    message, locale: 'en', currentState: existing,
     llmDraftPatch: {
       inferredType: 'truss', lengthM: 8, heightM: 3, bayCount: 2, loadKN: 20,
       engineeringDraft: {
@@ -39,17 +47,108 @@ function stateFor(members, withCrossing, issue = false, message = '') {
       }),
     },
   });
-  return handler.mergeState(undefined, patch);
+  return handler.mergeState(existing, patch);
 }
 
 describe('truss crossing interpretation', () => {
-  test('reproduces acceptance of an ambiguous crossing when extraction wrongly supplies a connected node', () => {
-    const state = stateFor(connectedMembers, true, false, conflictingVisionSummary);
+  test('rejects a connected crossing that contradicts an identifiable unresolved vision observation', () => {
+    const state = stateFor(connectedMembers, true, false, visionMessage(crossingVision));
+    expect(state.draftIssues?.map(({ field }) => field)).toContain('topology');
+    expect(state.skillState.invalidDraftFields).toContain('topology');
+    expect(handler.computeMissing(state, 'execution').critical).toContain('topology');
+    expect(handler.buildModel(state)).toBeUndefined();
+  });
+
+  test('also identifies an unresolved crossing when vision lists the two members as continuous', () => {
+    const state = stateFor(connectedMembers, true, false, visionMessage({
+      ...crossingVision, members: ['B-D', 'C-F'],
+    }));
+    expect(state.draftIssues?.map(({ field }) => field)).toContain('topology');
+    expect(handler.computeMissing(state, 'execution').critical).toContain('topology');
+  });
+
+  test('allows a later explicit connection detail to resolve the vision uncertainty', () => {
+    const state = stateFor(connectedMembers, true, false,
+      `A connection detail explicitly connects X.\n${visionMessage(crossingVision)}`);
     expect(state.draftIssues ?? []).toEqual([]);
     expect(handler.computeMissing(state, 'execution').critical).toEqual([]);
-    const model = handler.buildModel(state);
-    expect(model.nodes).toHaveLength(7);
-    expect(model.elements).toHaveLength(12);
+    expect(handler.buildModel(state)?.nodes).toHaveLength(7);
+  });
+
+  test('allows a direct user instruction that the crossing must be connected', () => {
+    const state = stateFor(connectedMembers, true, false,
+      `X must be connected.\n${visionMessage(crossingVision)}`);
+    expect(handler.computeMissing(state, 'execution').critical).toEqual([]);
+    expect(handler.buildModel(state)?.nodes).toHaveLength(7);
+  });
+
+  test('allows an explicit connected crossing recorded in the vision summary', () => {
+    const state = stateFor(connectedMembers, true, false, visionMessage({
+      ...crossingVision,
+      notes: ['A connection detail explicitly joins the members at X without a dot.'],
+    }));
+    expect(handler.computeMissing(state, 'execution').critical).toEqual([]);
+    expect(handler.buildModel(state)?.elements).toHaveLength(12);
+  });
+
+  test('keeps continuous members when vision records an unresolved but unconnected crossing', () => {
+    const state = stateFor(unconnectedMembers, false, false, visionMessage({
+      ...crossingVision,
+      members: ['B-D', 'C-F'],
+      notes: ['Connected joints elsewhere are marked with dots; X has no dot.'],
+    }));
+    expect(handler.computeMissing(state, 'execution').critical).toEqual([]);
+    expect(handler.buildModel(state)?.elements).toHaveLength(10);
+  });
+
+  test('does not treat absence of a connection detail as affirmative evidence', () => {
+    const state = stateFor(connectedMembers, true, false, visionMessage({
+      ...crossingVision,
+      notes: ['No connection detail is shown at X.'],
+    }));
+    expect(handler.computeMissing(state, 'execution').critical).toContain('topology');
+  });
+
+  test('does not infer ambiguity when the crossing lacks a locatable identity', () => {
+    const state = stateFor(connectedMembers, true, false, visionMessage({
+      ...crossingVision, nodes: crossingVision.nodes.filter((node) => !node.startsWith('X:')),
+    }));
+    expect(state.draftIssues ?? []).toEqual([]);
+  });
+
+  test('does not block a terminating member at an otherwise uncertain crossing', () => {
+    const terminating = [...commonMembers, ['B', 'X'], ['X', 'D'], ['C', 'X']];
+    const state = stateFor(terminating, true, false, visionMessage(crossingVision));
+    expect(state.draftIssues ?? []).toEqual([]);
+    expect(handler.buildModel(state)?.elements).toHaveLength(11);
+  });
+
+  test('a complete unconnected correction clears the specific topology issue', () => {
+    const blocked = stateFor(connectedMembers, true, false, visionMessage(crossingVision));
+    const corrected = stateFor(unconnectedMembers, false, false, visionMessage(crossingVision), blocked);
+    expect(corrected.draftIssues ?? []).toEqual([]);
+    expect(corrected.skillState.invalidDraftFields ?? []).not.toContain('topology');
+    expect(handler.computeMissing(corrected, 'execution').critical).toEqual([]);
+    expect(handler.buildModel(corrected)?.elements).toHaveLength(10);
+  });
+
+  test('repeated contradictory extraction keeps one topology issue', () => {
+    const blocked = stateFor(connectedMembers, true, false, visionMessage(crossingVision));
+    const repeated = stateFor(connectedMembers, true, false, visionMessage(crossingVision), blocked);
+    expect(repeated.draftIssues?.filter(({ field }) => field === 'topology')).toHaveLength(1);
+  });
+
+  test('uses checkpointed vision evidence on a parameter-only continuation turn', () => {
+    const vision = visionMessage(crossingVision);
+    const message = resolveTrussExtractionEvidenceMessage(
+      'truss', 'current-state', 'Use steel T1 and analyze LC1.',
+      [{ role: 'human', content: vision }, { role: 'human', content: 'Use steel T1 and analyze LC1.' }],
+    );
+    expect(message).toContain(vision);
+    const state = stateFor(connectedMembers, true, false, message);
+    expect(handler.computeMissing(state, 'execution').critical).toContain('topology');
+    expect(resolveTrussExtractionEvidenceMessage('frame', 'current-state', 'new frame', [{ role: 'human', content: vision }]))
+      .toBe('new frame');
   });
 
   test('preserves continuous members at an unmarked crossing when extraction supplies that topology', () => {

@@ -136,6 +136,8 @@ ${summarizeArtifacts(state)}
 
 ## 工具使用策略
 
+当用户仅要求识别图像或文字描述中的结构类型时，先调用 detect_structure_type（传入完整原始消息），收到结果后再根据证据回答。仅识别时不要调用 extract_draft_params、build_model 或 run_analysis，除非用户还要求建模或分析。无关的普通对话不需要结构类型检测。
+
 当用户提出结构设计或分析请求时，按以下流程执行：
 1. 先调用 detect_structure_type（传入用户的完整原始消息，不要改写或翻译）；等待其返回后，再调用 extract_draft_params。extract_draft_params 会复用本次检测结果，禁止并行调用这两个工具
 2. 如果 extract_draft_params 返回 criticalMissing 字段，使用 ask_user_clarification 询问缺失参数
@@ -215,6 +217,8 @@ ${summarizeArtifacts(state)}
 7. **No empty responses**: Every response must contain meaningful text content
 
 ## Tool Usage Strategy
+
+For a structural identification-only request, including identification from an image summary, call detect_structure_type before answering and pass the complete original user message. Then answer from the available evidence. Do not call extract_draft_params, build_model, or run_analysis for identification alone unless the user also requests modeling or analysis. Do not require detection for unrelated conversation.
 
 When the user makes a structural design or analysis request, follow this workflow:
 1. Call detect_structure_type first (pass the user's EXACT original message — do NOT paraphrase or translate). After it returns, call extract_draft_params, which reuses that detection result; do not call these two tools in parallel

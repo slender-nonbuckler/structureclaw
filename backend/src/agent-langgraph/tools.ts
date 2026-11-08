@@ -98,6 +98,33 @@ function latestHumanMessageText(messages: unknown[] | undefined): string {
   return '';
 }
 
+function latestVisionEvidenceText(messages: unknown[] | undefined): string {
+  if (!Array.isArray(messages)) return '';
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const role = messageRole(messages[i]);
+    if (role !== 'human' && role !== 'user') continue;
+    const content = messageText(messages[i]);
+    if (content.includes('[Benchmark vision attachment summaries]')
+      || content.includes('[Attachment vision summary:')
+      || content.includes('[附件视觉摘要:')) return content;
+  }
+  return '';
+}
+
+export function resolveTrussExtractionEvidenceMessage(
+  pluginId: string,
+  routingSource: string | undefined,
+  extractionMessage: string,
+  messages: unknown[] | undefined,
+): string {
+  if (pluginId !== 'truss' || routingSource !== 'current-state'
+    || extractionMessage.includes('[Benchmark vision attachment summaries]')
+    || extractionMessage.includes('[Attachment vision summary:')
+    || extractionMessage.includes('[附件视觉摘要:')) return extractionMessage;
+  const priorVision = latestVisionEvidenceText(messages);
+  return priorVision ? `${extractionMessage}\n\n${priorVision}` : extractionMessage;
+}
+
 const ATTACHMENT_DETAIL_MARKERS = [
   '[Attachment analysis:',
   '[附件解析:',
@@ -2542,8 +2569,8 @@ export function createDetectStructureTypeTool(skillRuntime: AgentSkillRuntime) {
     {
       name: 'detect_structure_type',
       description:
-        'Detect the structural type (beam, truss, frame, portal-frame, etc.) from a user description. ' +
-        'Returns the matched type key, mapped model type, and the skill ID to use for further processing.',
+        'Detect the structural type (beam, truss, frame, portal-frame, etc.) from a user description or image summary, including identification-only requests. ' +
+        'Returns the matched type key, mapped model type, and skill ID; a supported classification is retained for later turns.',
       schema: z.object({
         message: z.string().describe('The user message describing the structure').optional(),
         locale: z.enum(['zh', 'en']).optional().describe('User locale (defaults to session locale)'),
@@ -2737,8 +2764,11 @@ export function createExtractDraftParamsTool(skillRuntime: AgentSkillRuntime) {
         });
 
         // Step 4: Handler pipeline (extractDraft → mergeState → computeMissing)
+        const handlerMessage = resolveTrussExtractionEvidenceMessage(
+          plugin.id, match.routingSource, extractionMessage, state?.messages,
+        );
         let patch = plugin.handler.extractDraft({
-          message: extractionMessage,
+          message: handlerMessage,
           locale,
           currentState: existingState,
           llmDraftPatch: draftPatch,
@@ -2763,7 +2793,7 @@ export function createExtractDraftParamsTool(skillRuntime: AgentSkillRuntime) {
           });
           if (retryDraftPatch) {
             const retryPatch = plugin.handler.extractDraft({
-              message: extractionMessage,
+              message: handlerMessage,
               locale,
               currentState: nextState,
               llmDraftPatch: retryDraftPatch,

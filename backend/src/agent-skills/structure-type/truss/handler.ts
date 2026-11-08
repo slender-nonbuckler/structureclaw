@@ -13,6 +13,7 @@ import { buildStructuralTypeMatch, resolveLegacyStructuralStage } from '../../..
 import { buildInteractionQuestions } from '../../../agent-runtime/fallback.js';
 import { buildDefaultReportNarrative } from '../../../agent-runtime/report-template.js';
 import { matchConservativeStructuralRoute } from '../../../agent-runtime/structural-routing.js';
+import { unresolvedConnectedCrossing } from './crossing-evidence.js';
 import type { AppLocale } from '../../../services/locale.js';
 import type {
   DraftExtraction,
@@ -286,12 +287,35 @@ export const handler: SkillHandler = {
   parseProvidedValues(values) {
     return toTrussPatch(normalizeLegacyDraftPatch(values));
   },
-  extractDraft({ llmDraftPatch }) {
-    return toTrussPatch(normalizeLlmDraftPatch(llmDraftPatch));
+  extractDraft({ message, llmDraftPatch }) {
+    const patch = toTrussPatch(normalizeLlmDraftPatch(llmDraftPatch));
+    const crossingId = unresolvedConnectedCrossing(patch, message);
+    if (crossingId) {
+      patch.draftIssues = [
+        ...(patch.draftIssues ?? []),
+        {
+          field: 'topology',
+          severity: 'ambiguous',
+          reason: `Vision evidence leaves crossing ${crossingId} unmarked and its connectivity unresolved. / 视觉证据显示交叉点 ${crossingId} 未标记，连接关系尚不明确。`,
+        },
+      ];
+      appendInvalidField(patch, 'topology');
+    }
+    return patch;
   },
   mergeState(existing, patch) {
     const trussPatch = toTrussPatch(patch);
-    return reconcileInvalidFields(mergeLegacyState(existing, trussPatch, 'truss', 'truss'), trussPatch);
+    const merged = reconcileInvalidFields(mergeLegacyState(existing, trussPatch, 'truss', 'truss'), trussPatch);
+    const seenCrossings = new Set<string>();
+    return {
+      ...merged,
+      draftIssues: merged.draftIssues?.filter((issue) => {
+        if (!issue.reason.startsWith('Vision evidence leaves crossing ')) return true;
+        if (seenCrossings.has(issue.reason)) return false;
+        seenCrossings.add(issue.reason);
+        return true;
+      }),
+    };
   },
   computeMissing(state, phase) {
     return computeLegacyMissing({ ...state, inferredType: 'truss' }, phase, [...ALLOWED_KEYS]);
