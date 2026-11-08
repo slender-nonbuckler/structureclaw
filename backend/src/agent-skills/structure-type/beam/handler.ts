@@ -323,6 +323,12 @@ function buildBeamQuestions(
 
 function buildBeamReportNarrative(input: SkillReportNarrativeInput): string {
   const base = buildDefaultReportNarrative(input);
+  const model = input.normalizedModel && typeof input.normalizedModel === 'object'
+    ? input.normalizedModel as Record<string, unknown> : {};
+  const metadata = model.metadata && typeof model.metadata === 'object'
+    ? model.metadata as Record<string, unknown> : {};
+  const interpretation = metadata.beamLoadInterpretation && typeof metadata.beamLoadInterpretation === 'object'
+    ? metadata.beamLoadInterpretation as Record<string, unknown> : undefined;
   const beamSpecificNotes = [
     '',
     input.locale === 'zh' ? '## 梁专项说明' : '## Beam-Specific Notes',
@@ -333,7 +339,59 @@ function buildBeamReportNarrative(input: SkillReportNarrativeInput): string {
       ? '- 若为连续梁、变截面梁或存在复杂连接，请补充更细分模型后再比较控制工况。'
       : '- For continuous beams, variable sections, or complex connections, refine the model before comparing governing cases.',
   ];
+  if (interpretation?.basis === 'diagrammatic-full-span') {
+    beamSpecificNotes.push(input.locale === 'zh'
+      ? `- 荷载解释：按图示全跨均布荷载约定，将 ${String(interpretation.caseId)} 的 ${String(interpretation.pressureKNM)} kN/m 向下荷载作用于支座间 ${String(interpretation.loadedLengthM)} m；端部未标尺寸的小空隙视为绘图留白，而非实测加载边界。`
+      : `- Load interpretation: diagrammatic full-span convention applies ${String(interpretation.caseId)} downward ${String(interpretation.pressureKNM)} kN/m over ${String(interpretation.loadedLengthM)} m between supports; small undimensioned end gaps are treated as drawing clearance, not measured load offsets.`);
+  }
+  const nodes = Array.isArray(model.nodes) ? model.nodes as Array<Record<string, unknown>> : [];
+  const xCoordinates = nodes.map((node) => node.x).filter((x): x is number => typeof x === 'number' && Number.isFinite(x));
+  if (interpretation?.basis === 'diagrammatic-full-span' && xCoordinates.length >= 3) {
+    const midspanX = (Math.min(...xCoordinates) + Math.max(...xCoordinates)) / 2;
+    const midspanNode = nodes.find((node) => typeof node.x === 'number' && Math.abs(node.x - midspanX) < 1e-9);
+    const analysis = input.analysis && typeof input.analysis === 'object' ? input.analysis as Record<string, unknown> : {};
+    const data = analysis.data && typeof analysis.data === 'object' ? analysis.data as Record<string, unknown> : {};
+    const displacements = data.displacements && typeof data.displacements === 'object'
+      ? data.displacements as Record<string, unknown> : {};
+    const response = midspanNode && displacements[String(midspanNode.id)] && typeof displacements[String(midspanNode.id)] === 'object'
+      ? displacements[String(midspanNode.id)] as Record<string, unknown> : {};
+    if (typeof response.uz === 'number' && Number.isFinite(response.uz)) {
+      const meta = data.meta && typeof data.meta === 'object' ? data.meta as Record<string, unknown> : {};
+      const units = meta.units && typeof meta.units === 'object' ? meta.units as Record<string, unknown> : {};
+      const unit = typeof units.displacement === 'string' ? units.displacement : 'm';
+      beamSpecificNotes.push(input.locale === 'zh'
+        ? `- 跨中竖向挠度：节点 ${String(midspanNode?.id)} (x=${midspanX} m)，uz=${response.uz} ${unit}。`
+        : `- Midspan vertical deflection: node ${String(midspanNode?.id)} (x=${midspanX} m), uz=${response.uz} ${unit}.`);
+    }
+  }
   return [base, ...beamSpecificNotes].join('\n');
+}
+
+function withDiagrammaticFullSpanMetadata(state: DraftState, model: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!model || state.skillState?.beamLoadInterpretation !== 'diagrammatic-full-span') return model;
+  const loads = state.engineeringDraft?.loads ?? [];
+  const load = loads.length === 1 ? loads[0] : undefined;
+  const length = state.lengthM;
+  const supports = state.engineeringDraft?.boundary?.supportPositionsM;
+  if (!load || !['line', 'distributed'].includes(load.kind) || load.unit !== 'kN/m'
+    || (load.target && !['beam', 'full-span', 'all'].includes(load.target.toLowerCase()))
+    || !Number.isFinite(length) || !length || !supports || supports.length !== 2
+    || supports[0] !== 0 || supports[1] !== length) return model;
+  const elements = Array.isArray(model.elements) ? model.elements as Array<Record<string, unknown>> : [];
+  const cases = Array.isArray(model.load_cases) ? model.load_cases as Array<Record<string, unknown>> : [];
+  const loadCase = cases.find((entry) => entry.id === (load.caseId ?? 'LC1'));
+  const modelLoads = loadCase && Array.isArray(loadCase.loads) ? loadCase.loads as Array<Record<string, unknown>> : [];
+  const loadedElements = new Set(modelLoads.filter((entry) => entry.type === 'distributed' && entry.wz === -load.magnitude).map((entry) => entry.element));
+  if (!elements.length || modelLoads.length !== elements.length || loadedElements.size !== elements.length
+    || !elements.every((element) => loadedElements.has(element.id))) return model;
+  const metadata = model.metadata && typeof model.metadata === 'object' ? model.metadata as Record<string, unknown> : {};
+  return {
+    ...model,
+    metadata: {
+      ...metadata,
+      beamLoadInterpretation: { caseId: load.caseId ?? 'LC1', pressureKNM: load.magnitude, loadedLengthM: length, basis: 'diagrammatic-full-span' },
+    },
+  };
 }
 
 export const handler: SkillHandler = {
@@ -381,7 +439,7 @@ export const handler: SkillHandler = {
     return buildBeamReportNarrative(input);
   },
   buildModel(state) {
-    return buildLegacyModel({ ...state, inferredType: 'beam' }, [...ALLOWED_KEYS]);
+    return withDiagrammaticFullSpanMetadata(state, buildLegacyModel({ ...state, inferredType: 'beam' }, [...ALLOWED_KEYS]));
   },
   resolveStage(missingKeys) {
     return resolveLegacyStructuralStage(missingKeys);
